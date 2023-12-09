@@ -7,5 +7,5 @@ add_executable(SoftFunctionalDependencies main.cpp
         candidate.h
         cords.hpp
         cords.cpp
-        units_pair.hpp
-        sample.hpp)
+        sample.hpp
+        alliacies.hpp)

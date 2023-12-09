@@ -3,6 +3,6 @@
 
 int main() {
     algos::Cords cord;
-    cord.ExecuteInternal("/home/shalasheg/CLionProjects/SoftFunctionalDependencies/datasets/lineitem10000.txt");
+    cord.ExecuteInternal("/home/shalasheg/CLionProjects/SoftFunctionalDependencies/datasets/lineitem537.txt",true);
     return 0;
 }
