@@ -1,11 +1,12 @@
-#include "cords.hpp"
 #include <iostream>
 #include <unordered_map>
 #include <cmath>
-#include "sample.hpp"
 #include <algorithm>
 #include <functional>
 #include <boost/math/distributions/chi_squared.hpp>
+
+#include "sample.hpp"
+#include "cords.hpp"
 
 namespace algos {
 
@@ -39,8 +40,7 @@ namespace algos {
 
     Cords::Cords() = default;
 
-    //TODO: computes correctly only for 0<p<0.4
-    //TODO: попробовать убрать unsigned
+    //FIXME: computes correctly only for 0<p<0.4
 // formulae (2) from "CORDS: Automatic Discovery of Correlations and Soft Functional Dependencies."
     long long Cords::ComputeSampleSize(unsigned long long d1, unsigned long long d2) const {
         long double v = (d1 - 1) * (d2 - 1);
@@ -54,10 +54,20 @@ namespace algos {
     }
 
     void PrintSample(const Sample &sample, const Table &tbl) {
+        std::cout << "sample: " << std::endl;
         for (auto i: sample.row_indices) {
             std::cout << tbl[i][sample.lhs_ind] << " " << tbl[i][sample.rhs_ind] << std::endl;
         }
         std::cout << std::endl << std::endl;
+    }
+
+    void PrintContingencyTable(const std::vector<std::vector<size_t>> &table) {
+        for (const auto &it: table) {
+            for (auto it2: it) {
+                std::cout << it2 << " ";
+            }
+            std::cout << std::endl;
+        }
     }
 
     bool Cords::DetectSfd(const Sample &smp) {
@@ -73,17 +83,20 @@ namespace algos {
         return false;
     }
 
+    //calculates cardinality of each column in a table, creates a vector of unordered_maps comprised of num_freqvals most frequent values
+    // where key = value val = occurrence frequency
     void Cords::GetFrequentValuesStatistics(const Table &data) {
         for (size_t col_ind = 0; col_ind < data[0].size(); col_ind++) {
             std::unordered_map<std::string, int> counter;
-            //TODO: CHANGE
+            //TODO: CHANGE has header?
             size_t st = has_header ? 1 : 0;
             for (size_t row_ind = st; row_ind < data.size(); row_ind++) {
-                if (counter.find(data[row_ind][col_ind]) == counter.end()) {
+                auto it = counter.find(data[row_ind][col_ind]);
+                if (it == counter.end()) {
                     counter[data[row_ind][col_ind]] = 1;
                     cardinality[col_ind]++;
                 } else {
-                    counter[data[row_ind][col_ind]]++;
+                    it->second++;
                 }
             }
             //TODO: CHANGE!!!!!!!!!!!!!!!!
@@ -98,181 +111,218 @@ namespace algos {
             std::sort(stats.begin(), stats.end(), cmp);
 
             for (int i = 0; i < std::min(num_freqvals, stats.size()); i++) {
-                frequent_values_statistics[col_ind][stats[i].first] = {stats[i].second, i};
+                frequent_values_statistics[col_ind][stats[i].first] = {stats[i].second,
+                                                                       i}; // key = value map[key] = {value frequency, sequence number in the column}
                 freq_sums[col_ind] += stats[i].second;
             }
         }
     }
 
-    void
-    Cords::Filter(const std::unordered_map<std::string, std::pair<size_t, size_t>> &freq_val_stats,
-                  const algos::Table &data, size_t col_ind,
-                  Sample &smp) {
-        for (auto row = smp.row_indices.begin(); row != smp.row_indices.end(); row++) {
+    void Cords::Filter(const std::unordered_map<std::string, std::pair<size_t, size_t>> &freq_val_stats,
+                       const algos::Table &data, size_t col_ind,
+                       Sample &smp) {
+        auto row = smp.row_indices.begin();
+        while (row != smp.row_indices.end()) {
             if (freq_val_stats.find(data[*row][col_ind]) == freq_val_stats.end()) {
-                smp.row_indices.erase(row);
-                std::cout << "erased: " << data[*row][col_ind] << std::endl;
+                std::cout << "erased: " << *row << " " << data[*row][col_ind] << std::endl;
+                row = smp.row_indices.erase(row);
+            } else {
+                row++;
             }
         }
+    }
 
+    //FIXME: Redundant changes in domains[col_i] and is_skewed[col_i] if we already know that column is skewed or not
+    void Cords::SkewHandling(size_t col_i, size_t col_k, const Table &data, Sample &smp) {
+        for (size_t col_ind: {col_i, col_k}) {
+            if (freq_sums[col_ind] >= (1 - eps4) * data.size()) {
+                is_skewed[col_ind] = true;
+                domains[col_ind] = frequent_values_statistics[col_ind].size();
+                Filter(frequent_values_statistics[col_ind], data, col_ind, smp);
+            } else {
+                domains[col_ind] = std::min(cardinality[col_ind], d_max);
+            }
+
+        }
     }
 
     size_t Cords::Category(size_t col_ind, const std::string &val, size_t domain, bool skew, const Table &data) const {
         if (skew) {
             return frequent_values_statistics[col_ind].at(val).second;
         }
-        //TODO: CHANGE HASH
+        //TODO: change hash when adding to desbordante
         return std::hash<std::string>{}(val) % domain; //+1;
+    }
+
+    void Cords::ComputeContingencyTable(Sample &smp, const Table &data, size_t col_i, size_t col_k,
+                                        std::vector<std::vector<size_t>> &n_i_j, std::vector<size_t> &n_i,
+                                        std::vector<size_t> &n_j) {
+        for (size_t row_ind: smp.row_indices) {
+            size_t i = Category(col_i, data[row_ind][col_i], domains[col_i], is_skewed[col_i], data);
+            size_t j = Category(col_k, data[row_ind][col_k], domains[col_k], is_skewed[col_k], data);
+            n_i_j[i][j]++;
+            n_i[i]++;
+            n_j[j]++;
+        }
     }
 
     size_t IsZero(size_t val) {
         return val == 0;
     }
 
-    //TODO: Понять нужно ли сортировать столбцы по количеству различных значений, скорее всего надо, но лучше использовать сортировку которая за один проход поймёт что ничего делать не надо
-    //TODO: Думаю надо модифицировать квик сорт либо которая ведёт элемент назад пока не встанет куда надо
-    void Cords::ExecuteInternal(const std::string &filename, bool has_head) {
-        this->has_header = has_head;
-        int cnt = 0;
-        if (eps1 >= delta) {
-            throw std::logic_error("delta must be more than eps1");
+    bool Cords::TooMuchStructuralZeros(const std::vector<std::vector<size_t>> &n_i_j, size_t col_i, size_t col_k) {
+        long double zeros_sum = 0;
+        for (int i = 0; i < domains[col_i]; i++) {
+            for (int j = 0; j < domains[col_k]; j++) {
+                zeros_sum += IsZero(n_i_j[i][j]);
+            }
         }
-        auto data = GetTable(filename);
+        return zeros_sum > eps5 * domains[col_i] * domains[col_k];
+    }
 
-        for (const auto &i: data[0]) {
-            std::cout << i << " ";
+    long double Cords::ComputeChiSquared(const std::vector<std::vector<size_t>> &n_i_j, const std::vector<size_t> &n_i,
+                                         const std::vector<size_t> &n_j, size_t col_i, size_t col_k) {
+        long double chi_squared = 0;
+        for (size_t i = 0; i < domains[col_i]; i++) {
+            for (size_t j = 0; j < domains[col_k]; j++) {
+                if (n_i[i] * n_j[j] == 0) throw std::logic_error("Structural zeroes are not handled");
+
+                long double tmp = std::pow(n_i_j[i][j] - n_i[i] * n_j[j], 2);
+                chi_squared += // formulae (1) from "CORDS: Automatic Discovery of Correlations and Soft Functional Dependencies."
+                        tmp / (n_i[i] * n_j[j]);
+            }
         }
+        return chi_squared;
+    }
 
-        std::cout << std::endl;
-        size_t rows = data.size();
-        size_t columns = data[0].size();
-        std::cout << "columns: " << columns << " rows: " << rows << std::endl;
-        std::vector<bool> is_soft(columns, false);
+    void Cords::Init(size_t columns) {
         cardinality.resize(columns, 0);
         frequent_values_statistics.resize(columns);
         freq_sums.resize(columns, 0);
         is_skewed.resize(columns, false);
         domains.resize(columns, 0);
+    }
+
+    std::pair<size_t, size_t> Cords::SwitchIndicesIfNecessary(size_t ind1, size_t ind2) {
+        if (cardinality[ind2] > cardinality[ind1]) {
+            //std::cout << "SWITCHED" << std::endl;
+            return {ind2, ind1};
+        }
+        return {ind1, ind2};
+    }
+
+    void Cords::ExecuteInternal(const std::string &filename, bool has_head) {
+        has_header = has_head;
+        int cnt = 0;
+        if (eps1 >= delta) {
+            throw std::logic_error("delta must be more than eps1");
+        }
+        auto data = GetTable(filename);
+        if (has_header) {
+            for (const auto &i: data[0]) {
+                std::cout << i << " ";
+            }
+        } else {
+            std::cout << "NO HEADER" << std::endl;
+        }
+
+        std::cout << std::endl;
+
+        size_t rows = data.size();
+        size_t columns = data[0].size();
+        std::vector<bool> is_soft(columns, false);
+        std::cout << "columns: " << columns << " rows: " << rows << std::endl;
+
+        Init(columns);
+
         GetFrequentValuesStatistics(data);
-        for (size_t col_i = 0; col_i < columns - 1; col_i++) {
-            if (is_soft[col_i]) {
+
+        for (auto it: cardinality) {
+            std::cout << it << " ";
+        }
+        std::cout << std::endl;
+        for (size_t ind1 = 0; ind1 < columns - 1; ind1++) {
+
+            if (is_soft[ind1]) {
                 continue;
             }
-            if (cardinality[col_i] >= (1 - eps1) * rows) {
-                soft_keys.push_back(col_i);
-                is_soft[col_i] = true;
+            if (cardinality[ind1] >= (1 - eps1) * rows) {
+                soft_keys.push_back(ind1);
+                is_soft[ind1] = true;
                 continue;
             }
-            if (cardinality[col_i] == 1) {
-                trivial_columns.push_back(col_i);
+            if (cardinality[ind1] == 1) {
+                trivial_columns.push_back(ind1);
                 continue;
             }
 
-            for (size_t col_k = col_i + 1; col_k < columns; col_k++) {
-                if (is_soft[col_k]) {
+            for (size_t ind2 = ind1 + 1; ind2 < columns; ind2++) {
+
+                if (is_soft[ind2]) {
                     continue;
                 }
-                if (cardinality[col_k] >= (1 - eps1) * rows) {
-                    soft_keys.push_back(col_k);
-                    is_soft[col_k] = true;
+                if (cardinality[ind2] >= (1 - eps1) * rows) {
+                    soft_keys.push_back(ind2);
+                    is_soft[ind2] = true;
                     continue;
                 }
-                if (cardinality[col_k] == 1) {
-                    trivial_columns.push_back(col_k);
+                if (cardinality[ind2] == 1) {
+                    trivial_columns.push_back(ind2);
                     continue;
                 }
+
+                auto [col_i, col_k] = SwitchIndicesIfNecessary(ind1, ind2);
                 cnt++;
-                unsigned long long sample_size = ComputeSampleSize(cardinality[col_i], cardinality[col_k]);
+                unsigned long long possible_sample_size = ComputeSampleSize(cardinality[col_i], cardinality[col_k]);
 
-                size_t size = rows > sample_size ? sample_size : rows;
-                Sample smp(size, rows, col_i, col_k, data);
-                //TODO: скорее всего надо будет передавать не rows а минимум из длины
+
+                //std::cout << "possible sample size: " << possible_sample_size << std::endl;
+                //size_t size = rows > possible_sample_size ? possible_sample_size : rows;
+                //  Sample smp(size, rows, col_i, col_k, data);
+
+                Sample smp(possible_sample_size, rows, col_i, col_k, data, has_header);
+                //TODO: скорее всего надо будет передавать не rows а минимум из длинн upd: похоже что нет, подумать ещё
                 //PrintSample(smp, data);
 
                 if (DetectSfd(smp)) {
                     continue;
                 }
-
-                //skew handling
-                for (size_t col_ind: {col_i, col_k}) {
-                    if (freq_sums[col_ind] >= (1 - eps4) * data.size()) {
-                        is_skewed[col_ind] = true;
-                        domains[col_ind] = frequent_values_statistics[col_ind].size();
-                        Filter(frequent_values_statistics[col_ind], data, col_ind, smp);
-                    } else {
-                        domains[col_ind] = std::min(cardinality[col_ind], d_max);
-                    }
-                }
-                //std::cout << "skew handled" << std::endl;
-
+                SkewHandling(col_i, col_k, data, smp);
+                //std::cout << "filtered ";
+                //PrintSample(smp, data);
                 std::vector<std::vector<size_t>> n_i_j(domains[col_i], std::vector<size_t>(domains[col_k], 0));
                 std::vector<size_t> n_i(domains[col_i], 0);
                 std::vector<size_t> n_j(domains[col_k], 0);
 
-                //std::cout << "d1: " << domains[col_i] << " d2: " << domains[col_k] << std::endl;
-                //std::cout << col_i << ":" << is_skewed[col_i] << " " << col_k << ":" << is_skewed[col_k] << std::endl;
-                for (size_t row_ind: smp.row_indices) {
-                    size_t i = Category(col_i, data[row_ind][col_i], domains[col_i], is_skewed[col_i], data);
-                    size_t j = Category(col_k, data[row_ind][col_k], domains[col_k], is_skewed[col_k], data);
-                    //std::cout << "i: " << i << " j: " << j << std::endl;
-                    n_i_j[i][j]++;
-                    n_i[i]++;
-                    n_j[j]++;
-                }
+                ComputeContingencyTable(smp, data, col_i, col_k, n_i_j, n_i, n_j);
+                //PrintContingencyTable(n_i_j);
+                //FIXME: есть ощущение что можно выставить параметры таким образом что данная проверка пропустит таблицу
+                // для которой вычисление хи - квадрат упадёт (будет деление на 0), возможно надо добавить доп. проверку
+                // и в случае деления на 0 считать что TooMuchStructuralZeroes
 
-//                std::cout << "n_i_j:" << std::endl;
-//                for (const auto &it: n_i_j) {
-//                    std::cout << "{";
-//                    for (auto it2: it) {
-//                        std::cout << it2 << " ";
-//                    }
-//                    std::cout << "}" << std::endl;
-//                }
-//                std::cout << "n_i:" << std::endl;
-//                std::cout << "{";
-//                for (auto it: n_i) {
-//                    std::cout << it << " ";
-//                }
-//                std::cout << "}" << std::endl;
-
-
-                size_t sum = 0;
-                for (int i = 0; i < domains[col_i]; i++) {
-                    for (int j = 0; j < domains[col_k]; j++) {
-                        sum += IsZero(n_i_j[i][j]);
-                    }
-                }
-                std::cout << "zeros sum:" << sum << std::endl;
-                if (sum > eps5 * domains[col_i] * domains[col_k]) {
+                if (TooMuchStructuralZeros(n_i_j, col_i, col_k)) {
                     correlations.emplace_back(col_i, col_k);
-                    //std::cout << "found correlation on eps: " << col_i << " <->" << col_k << std::endl;
+                    std::cout << "{" << col_i << "," << col_k << "} Too much structural zeroes" << std::endl
+                              << std::endl;
                     continue;
                 }
 
-                long double chi_squared = 0;
-                for (int i = 0; i < domains[col_i]; i++) {
-                    for (int j = 0; j < domains[col_k]; j++) {
-//                        std::cout << "n_i_j:" << n_i_j[i][j] << std::endl;
-//                        std::cout << "n_i:" << n_i[i] << std::endl;
-//                        std::cout << "n_j:" << n_j[j] << std::endl;
-//                        std::cout << "res: " << ((n_i_j[i][j] - n_i[i] * n_j[j]) * (n_i_j[i][j] - n_i[i] * n_j[j])) /
-//                                                (n_i[i] * n_j[j]) << std::endl;
-                        std::cout << "\n\n" << std::endl;
-                        chi_squared += // formulae (1) from "CORDS: Automatic Discovery of Correlations and Soft Functional Dependencies."
-                                ((n_i_j[i][j] - n_i[i] * n_j[j]) * (n_i_j[i][j] - n_i[i] * n_j[j])) / (n_i[i] * n_j[j]);
-                    }
-                }
+                //Computes chi - squared
+                long double chi_squared = ComputeChiSquared(n_i_j, n_i, n_j, col_i, col_k);
 
                 size_t v = (domains[col_i] - 1) * (domains[col_k] - 1);
                 std::cout << "degrees of freedom:" << v << std::endl;
                 boost::math::chi_squared dist(v);
                 long double t = quantile(dist, 1 - p);
-                //std::cout << "chi squared: " << chi_squared << " quantile: " << t << std::endl;
+                std::cout << "chi squared: " << chi_squared << " quantile: " << t << std::endl;
+                std::cout << std::endl;
                 if (chi_squared > t) {
                     correlations.emplace_back(col_i, col_k);
                     continue;
                 }
+                independent.emplace_back(col_i, col_k);
             }
+            //std::cout << "#" << std::endl;
         }
 
 
@@ -292,6 +342,13 @@ namespace algos {
             std::cout << "{" << it.first << "," << it.second << "}" << " ";
         }
         std::cout << std::endl;
-
+        std::cout << "independent: " << std::endl;
+        for (auto it: independent) {
+            std::cout << "{" << it.first << "," << it.second << "}" << " ";
+        }
+        std::cout << std::endl;
+//        for (auto it: domains) {
+//            std::cout << it << " ";
+//        }
     }
 }
