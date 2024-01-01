@@ -40,9 +40,9 @@ namespace algos {
 
     Cords::Cords() = default;
 
+    // formulae (2) from "CORDS: Automatic Discovery of Correlations and Soft Functional Dependencies."
     //FIXME: computes correctly only for 0<p<0.4
-// formulae (2) from "CORDS: Automatic Discovery of Correlations and Soft Functional Dependencies."
-    long long Cords::ComputeSampleSize(unsigned long long d1, unsigned long long d2) const {
+    long long Cords::ComputeSampleSize(long long d1, long long d2) const {
         long double v = (d1 - 1) * (d2 - 1);
         long double D = std::min(d1, d2);
         long double log = std::log(p * std::sqrt(2 * pi));
@@ -61,7 +61,7 @@ namespace algos {
         std::cout << std::endl << std::endl;
     }
 
-    void PrintContingencyTable(const std::vector<std::vector<size_t>> &table) {
+    void PrintContingencyTable(const std::vector<std::vector<long double>> &table) {
         for (const auto &it: table) {
             for (auto it2: it) {
                 std::cout << it2 << " ";
@@ -132,7 +132,7 @@ namespace algos {
         }
     }
 
-    //FIXME: Redundant changes in domains[col_i] and is_skewed[col_i] if we already know that column is skewed or not
+    //FIXME: Redundant changes in domains[col_i] and is_skewed[col_i] in case if we already know if column is skewed or not
     void Cords::SkewHandling(size_t col_i, size_t col_k, const Table &data, Sample &smp) {
         for (size_t col_ind: {col_i, col_k}) {
             if (freq_sums[col_ind] >= (1 - eps4) * data.size()) {
@@ -142,7 +142,6 @@ namespace algos {
             } else {
                 domains[col_ind] = std::min(cardinality[col_ind], d_max);
             }
-
         }
     }
 
@@ -155,8 +154,8 @@ namespace algos {
     }
 
     void Cords::ComputeContingencyTable(Sample &smp, const Table &data, size_t col_i, size_t col_k,
-                                        std::vector<std::vector<size_t>> &n_i_j, std::vector<size_t> &n_i,
-                                        std::vector<size_t> &n_j) {
+                                        std::vector<std::vector<long double>> &n_i_j, std::vector<long double> &n_i,
+                                        std::vector<long double> &n_j) {
         for (size_t row_ind: smp.row_indices) {
             size_t i = Category(col_i, data[row_ind][col_i], domains[col_i], is_skewed[col_i], data);
             size_t j = Category(col_k, data[row_ind][col_k], domains[col_k], is_skewed[col_k], data);
@@ -165,12 +164,12 @@ namespace algos {
             n_j[j]++;
         }
     }
-
+    //TODO: change val to long double?
     size_t IsZero(size_t val) {
         return val == 0;
     }
 
-    bool Cords::TooMuchStructuralZeros(const std::vector<std::vector<size_t>> &n_i_j, size_t col_i, size_t col_k) {
+    bool Cords::TooMuchStructuralZeros(const std::vector<std::vector<long double>> &n_i_j, size_t col_i, size_t col_k) {
         long double zeros_sum = 0;
         for (int i = 0; i < domains[col_i]; i++) {
             for (int j = 0; j < domains[col_k]; j++) {
@@ -180,16 +179,18 @@ namespace algos {
         return zeros_sum > eps5 * domains[col_i] * domains[col_k];
     }
 
-    long double Cords::ComputeChiSquared(const std::vector<std::vector<size_t>> &n_i_j, const std::vector<size_t> &n_i,
-                                         const std::vector<size_t> &n_j, size_t col_i, size_t col_k) {
+    long double
+    Cords::ComputeChiSquared(const std::vector<std::vector<long double>> &n_i_j, const std::vector<long double> &n_i,
+                             const std::vector<long double> &n_j, size_t col_i, size_t col_k, long double sample_size) {
         long double chi_squared = 0;
         for (size_t i = 0; i < domains[col_i]; i++) {
             for (size_t j = 0; j < domains[col_k]; j++) {
                 if (n_i[i] * n_j[j] == 0) throw std::logic_error("Structural zeroes are not handled");
-
-                long double tmp = std::pow(n_i_j[i][j] - n_i[i] * n_j[j], 2);
-                chi_squared += // formulae (1) from "CORDS: Automatic Discovery of Correlations and Soft Functional Dependencies."
-                        tmp / (n_i[i] * n_j[j]);
+                long double actual = n_i_j[i][j];
+                long double expected = n_i[i] * n_j[j] / sample_size;
+                chi_squared += (actual - expected) * (actual - expected) / (expected);
+                // similar to formulae (1) from "CORDS: Automatic Discovery of Correlations and Soft Functional Dependencies."
+                // seems like formulae which is given in the paper is incorrect
             }
         }
         return chi_squared;
@@ -205,7 +206,6 @@ namespace algos {
 
     std::pair<size_t, size_t> Cords::SwitchIndicesIfNecessary(size_t ind1, size_t ind2) {
         if (cardinality[ind2] > cardinality[ind1]) {
-            //std::cout << "SWITCHED" << std::endl;
             return {ind2, ind1};
         }
         return {ind1, ind2};
@@ -276,7 +276,7 @@ namespace algos {
                 unsigned long long possible_sample_size = ComputeSampleSize(cardinality[col_i], cardinality[col_k]);
 
 
-                //std::cout << "possible sample size: " << possible_sample_size << std::endl;
+                std::cout << "possible sample size: " << possible_sample_size << std::endl;
                 //size_t size = rows > possible_sample_size ? possible_sample_size : rows;
                 //  Sample smp(size, rows, col_i, col_k, data);
 
@@ -290,15 +290,16 @@ namespace algos {
                 SkewHandling(col_i, col_k, data, smp);
                 //std::cout << "filtered ";
                 //PrintSample(smp, data);
-                std::vector<std::vector<size_t>> n_i_j(domains[col_i], std::vector<size_t>(domains[col_k], 0));
-                std::vector<size_t> n_i(domains[col_i], 0);
-                std::vector<size_t> n_j(domains[col_k], 0);
+                std::vector<std::vector<long double>> n_i_j(domains[col_i],
+                                                            std::vector<long double>(domains[col_k], 0));
+                std::vector<long double> n_i(domains[col_i], 0);
+                std::vector<long double> n_j(domains[col_k], 0);
 
                 ComputeContingencyTable(smp, data, col_i, col_k, n_i_j, n_i, n_j);
                 //PrintContingencyTable(n_i_j);
-                //FIXME: есть ощущение что можно выставить параметры таким образом что данная проверка пропустит таблицу
+                //FIXME: есть ощущение что можно выставить параметры таким образом, что данная проверка пропустит таблицу
                 // для которой вычисление хи - квадрат упадёт (будет деление на 0), возможно надо добавить доп. проверку
-                // и в случае деления на 0 считать что TooMuchStructuralZeroes
+                // и в случае деления на 0 считать, что TooMuchStructuralZeroes
 
                 if (TooMuchStructuralZeros(n_i_j, col_i, col_k)) {
                     correlations.emplace_back(col_i, col_k);
@@ -308,13 +309,14 @@ namespace algos {
                 }
 
                 //Computes chi - squared
-                long double chi_squared = ComputeChiSquared(n_i_j, n_i, n_j, col_i, col_k);
+                long double chi_squared = ComputeChiSquared(n_i_j, n_i, n_j, col_i, col_k, smp.row_indices.size());
 
                 size_t v = (domains[col_i] - 1) * (domains[col_k] - 1);
                 std::cout << "degrees of freedom:" << v << std::endl;
                 boost::math::chi_squared dist(v);
                 long double t = quantile(dist, 1 - p);
-                std::cout << "chi squared: " << chi_squared << " quantile: " << t << std::endl;
+                long double cd = cdf(dist, chi_squared);
+                std::cout << "chi squared: " << chi_squared << " quantile: " << t << " cdf: " << cd << std::endl;
                 std::cout << std::endl;
                 if (chi_squared > t) {
                     correlations.emplace_back(col_i, col_k);
